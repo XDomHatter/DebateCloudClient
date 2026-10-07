@@ -4,6 +4,7 @@ import 'package:debate_cloud/app/app_design.dart';
 import 'package:debate_cloud/app/app_theme.dart';
 import 'package:debate_cloud/app/auth_service.dart';
 import 'package:debate_cloud/app/local_media.dart';
+import 'package:debate_cloud/app/video_poster.dart';
 import 'package:debate_cloud/server_sdk/chat.dart';
 import 'package:debate_cloud/widgets/app_tooltip.dart';
 import 'package:flutter/foundation.dart';
@@ -70,7 +71,7 @@ class ChatAvatar extends StatefulWidget {
 }
 
 class _ChatAvatarState extends State<ChatAvatar> {
-  ImageProvider? _image;
+  CachedMedia? _media;
 
   @override
   void initState() {
@@ -86,7 +87,7 @@ class _ChatAvatarState extends State<ChatAvatar> {
     if (oldWidget.userId != widget.userId ||
         oldWidget.hasAvatar != widget.hasAvatar ||
         oldWidget.avatarUpdatedAt != widget.avatarUpdatedAt) {
-      _image = null;
+      _media = null;
       _load();
     }
   }
@@ -103,7 +104,7 @@ class _ChatAvatarState extends State<ChatAvatar> {
       );
       // 请求返回期间 widget 可能已被复用给另一个用户。
       if (!mounted || media == null || requestedId != widget.userId) return;
-      setState(() => _image = media.imageProvider());
+      setState(() => _media = media);
     } catch (_) {
       // 头像加载失败时保留首字符占位图，不影响列表可用性。
     }
@@ -114,18 +115,25 @@ class _ChatAvatarState extends State<ChatAvatar> {
     final scheme = Theme.of(context).colorScheme;
     final name = widget.name.trim().isEmpty ? '?' : widget.name.trim();
     final size = widget.radius * 2;
+    // 头像只显示在 size×size 的圆里，按物理像素尺寸解码，避免把原图
+    // 整幅位图搬进显存——移动浏览器上这是滚动卡顿与内存的大头。
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 3;
+    final decodeWidth = (size * dpr).round().clamp(48, 192);
+    final avatarImage = _media == null
+        ? null
+        : ResizeImage(_media!.imageProvider(), width: decodeWidth);
     final avatar = Container(
       width: size,
       height: size,
       decoration: BoxDecoration(
         color: _seedColor(widget.userId),
         shape: BoxShape.circle,
-        image: _image != null
-            ? DecorationImage(image: _image!, fit: BoxFit.cover)
+        image: avatarImage != null
+            ? DecorationImage(image: avatarImage, fit: BoxFit.cover)
             : null,
       ),
       alignment: Alignment.center,
-      child: _image == null
+      child: avatarImage == null
           ? Text(
               name.characters.first.toUpperCase(),
               style: TextStyle(
@@ -739,6 +747,58 @@ class ChatInputField extends StatelessWidget {
   }
 }
 
+/// 单条消息的列表项容器：消息对象未变化时直接复用上一次构建的子树。
+///
+/// reverse 消息列表每来一条新消息，ListView 会重建所有可见项；气泡里
+/// 的 GptMarkdown 解析与排版开销大，按消息对象同一性跳过未变化项，
+/// 让重排范围只落在真正新增/变化的那条上。调用方应以
+/// `ValueKey('msg-<id>')` 作 key，元素按 key 复用后本守卫才能生效。
+class ChatMessageTile extends StatefulWidget {
+  const ChatMessageTile({
+    super.key,
+    required this.message,
+    required this.showDate,
+    required this.builder,
+  });
+
+  final ChatMessage message;
+
+  /// 是否显示日期分隔：分隔线取决于相邻消息，变化时必须重建。
+  final bool showDate;
+
+  final WidgetBuilder builder;
+
+  @override
+  State<ChatMessageTile> createState() => _ChatMessageTileState();
+}
+
+class _ChatMessageTileState extends State<ChatMessageTile> {
+  Widget? _cached;
+
+  @override
+  void didUpdateWidget(covariant ChatMessageTile oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 发送去重等场景会用新对象替换同一 id 的旧消息，必须重建。
+    if (!identical(widget.message, oldWidget.message) ||
+        widget.showDate != oldWidget.showDate) {
+      _cached = null;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 气泡宽度（MediaQuery）与配色（Theme）在 builder 里经本节点读取，
+    // 环境变化（旋转 / 明暗切换）时一律弃用缓存。
+    _cached = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _cached ??= widget.builder(context);
+  }
+}
+
 /// 媒体消息（图片 / 视频）的气泡内容。
 ///
 /// 服务端只下发 mediaKey，字节需经信封鉴权下载到本地后才能渲染
@@ -840,7 +900,15 @@ class _ChatMediaBubbleState extends State<ChatMediaBubble> {
             () => ChatMediaViewerPage(media: _media!, isVideo: false),
           ),
           child: Image(
-            image: _media!.imageProvider(),
+            // 气泡只有几百逻辑像素宽，按物理像素解码即可；全尺寸位图
+            // 在移动 GPU 上既慢解码又费显存。查看页仍用原图缩放。
+            image: ResizeImage(
+              _media!.imageProvider(),
+              width: (width *
+                      (MediaQuery.maybeDevicePixelRatioOf(context) ?? 3))
+                  .round()
+                  .clamp(320, 1280),
+            ),
             width: width,
             height: height,
             fit: BoxFit.cover,
@@ -897,14 +965,19 @@ class _ChatMediaBubbleState extends State<ChatMediaBubble> {
   }
 }
 
-/// 视频消息封面：初始化播放器取首帧，点击进入全屏播放。
+/// 视频消息封面：优先展示首帧海报（静态图），点击进入全屏播放。
+///
+/// 列表里若为每个可见视频初始化完整播放器（Web 端即创建 <video> 并
+/// 解码），移动端滚动开销巨大；因此先尝试用 video_poster 截一次首帧，
+/// 成功则封面只是普通图片，失败（原生端 / 编码不支持 / 超时）才回退
+/// 到播放器取首帧的原路径。
 ///
 /// 列表里必须静音且不自动播放——滚动经过时突然出声非常打扰。
 ///
-/// 初始化失败时（平台无实现、编码不支持、原生卡住）必须给出失败态：
-/// `VideoPlayerController.dispose()` 在 `initialize()` 抛异常后会永久挂起
-/// （见 [_safeDisposeVideo]），错误分支里若先 await 它，界面就再也切不到
-/// 失败态，会永远停在加载动画上。
+/// 播放器路径的初始化失败时（平台无实现、编码不支持、原生卡住）必须
+/// 给出失败态：`VideoPlayerController.dispose()` 在 `initialize()` 抛
+/// 异常后会永久挂起（见 [_safeDisposeVideo]），错误分支里若先 await 它，
+/// 界面就再也切不到失败态，会永远停在加载动画上。
 class ChatVideoCover extends StatefulWidget {
   const ChatVideoCover({
     super.key,
@@ -923,6 +996,7 @@ class ChatVideoCover extends StatefulWidget {
 
 class _ChatVideoCoverState extends State<ChatVideoCover> {
   VideoPlayerController? _controller;
+  ImageProvider? _poster;
   bool _failed = false;
 
   @override
@@ -932,6 +1006,13 @@ class _ChatVideoCoverState extends State<ChatVideoCover> {
   }
 
   Future<void> _init() async {
+    // 海报命中（或截帧成功）时封面只是一张图，绝不初始化播放器。
+    final poster = await createVideoPoster(widget.media);
+    if (!mounted) return;
+    if (poster != null) {
+      setState(() => _poster = poster);
+      return;
+    }
     final c = widget.media.createVideoController();
     try {
       await c.initialize().timeout(_videoInitTimeout);
@@ -985,6 +1066,8 @@ class _ChatVideoCoverState extends State<ChatVideoCover> {
                   child: VideoPlayer(c),
                 ),
               )
+            else if (_poster != null)
+              Image(image: _poster!, fit: BoxFit.cover)
             else
               Container(
                 color: scheme.surfaceContainerHighest,

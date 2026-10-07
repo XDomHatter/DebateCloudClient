@@ -48,59 +48,76 @@ class _FriendRequestsPageState extends State<FriendRequestsPage> {
             onAction: controller.load,
           );
         }
+        final inbox = controller.inbox;
+        final outbox = controller.outbox;
+        final inboxCount = inbox.isEmpty ? 1 : inbox.length;
+        // 索引布局：0 收件段头 | 1..n 收件内容 | n+1 发件段头 | 之后发件内容。
+        // 卡片延迟到 itemBuilder 构建，申请一多也只布局可见项。
+        final outboxHeadIndex = 1 + inboxCount;
         return RefreshIndicator(
           onRefresh: controller.load,
-          child: ListView(
+          child: ListView.builder(
             // 内容不足一屏时也必须可拖动，否则下拉刷新失效。
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(AppDesign.spaceM),
-            children: [
-              Center(
+            itemCount:
+                outboxHeadIndex + (outbox.isEmpty ? 1 : outbox.length),
+            itemBuilder: (context, index) {
+              Widget content;
+              if (index == 0) {
+                content = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _sectionHeader(
+                      context,
+                      title: '收到的申请',
+                      icon: Icons.downloading,
+                      count: inbox.length,
+                    ),
+                    const SizedBox(height: AppDesign.spaceXS),
+                  ],
+                );
+              } else if (index <= inboxCount) {
+                content = inbox.isEmpty
+                    ? const AppEmptyState(
+                        icon: Icons.inbox_outlined,
+                        message: '暂无收到的申请',
+                        verticalPadding: AppDesign.spaceL,
+                      )
+                    : _inboxCard(context, inbox[index - 1]);
+              } else if (index == outboxHeadIndex) {
+                content = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: AppDesign.spaceL),
+                    _sectionHeader(
+                      context,
+                      title: '我发出的申请',
+                      icon: Icons.outbox,
+                      count: outbox.length,
+                    ),
+                    const SizedBox(height: AppDesign.spaceXS),
+                  ],
+                );
+              } else {
+                final off = index - outboxHeadIndex;
+                content = outbox.isEmpty
+                    ? const AppEmptyState(
+                        icon: Icons.send_outlined,
+                        message: '暂无发出的申请',
+                        verticalPadding: AppDesign.spaceL,
+                      )
+                    : _outboxCard(context, outbox[off - 1]);
+              }
+              return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
                     maxWidth: AppDesign.maxContentWidth,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _sectionHeader(
-                        context,
-                        title: '收到的申请',
-                        icon: Icons.downloading,
-                        count: controller.inbox.length,
-                      ),
-                      const SizedBox(height: AppDesign.spaceXS),
-                      if (controller.inbox.isEmpty)
-                        const AppEmptyState(
-                          icon: Icons.inbox_outlined,
-                          message: '暂无收到的申请',
-                          verticalPadding: AppDesign.spaceL,
-                        )
-                      else
-                        for (final r in controller.inbox)
-                          _inboxCard(context, r),
-                      const SizedBox(height: AppDesign.spaceL),
-                      _sectionHeader(
-                        context,
-                        title: '我发出的申请',
-                        icon: Icons.outbox,
-                        count: controller.outbox.length,
-                      ),
-                      const SizedBox(height: AppDesign.spaceXS),
-                      if (controller.outbox.isEmpty)
-                        const AppEmptyState(
-                          icon: Icons.send_outlined,
-                          message: '暂无发出的申请',
-                          verticalPadding: AppDesign.spaceL,
-                        )
-                      else
-                        for (final r in controller.outbox)
-                          _outboxCard(context, r),
-                    ],
-                  ),
+                  child: content,
                 ),
-              ),
-            ],
+              );
+            },
           ),
         );
       }),

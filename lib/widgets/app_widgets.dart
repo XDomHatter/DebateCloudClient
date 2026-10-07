@@ -54,7 +54,9 @@ class _AppCardState extends State<AppCard> {
           duration: AppDesign.fast,
           child: AnimatedContainer(
             duration: AppDesign.fast,
-            clipBehavior: Clip.antiAlias,
+            // hardEdge 足以裁掉贴边色条等溢出内容：antiAlias 的抗锯齿
+            // 裁剪在移动浏览器上是每卡片一次的额外光栅开销。
+            clipBehavior: Clip.hardEdge,
             decoration: BoxDecoration(
               color: widget.selected
                   ? scheme.primaryContainer.withValues(alpha: 0.45)

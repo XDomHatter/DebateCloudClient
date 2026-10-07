@@ -262,11 +262,18 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
         final showDate = index == messages.length - 1 ||
             ChatTimeFmt.dateKey(m.createdAt) !=
                 ChatTimeFmt.dateKey(messages[index + 1].createdAt);
-        return Column(
-          children: [
-            if (showDate) _dateSeparator(context, m.createdAt),
-            _messageItem(context, m),
-          ],
+        return ChatMessageTile(
+          // 按 key 复用元素：新消息插入时已有项不重建，长消息的折叠
+          // 展开状态也因此得以保留。
+          key: ValueKey('msg-${m.id}'),
+          message: m,
+          showDate: showDate,
+          builder: (context) => Column(
+            children: [
+              if (showDate) _dateSeparator(context, m.createdAt),
+              _messageItem(context, m),
+            ],
+          ),
         );
       },
     );
@@ -305,13 +312,18 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
           ),
           if (isMe) ...[
             const SizedBox(width: AppDesign.spaceXXS),
-            Icon(
-              m.read ? Icons.done_all : Icons.done,
-              size: 13,
-              color: m.read
-                  ? context.statusStyleOf(AppStatus.success).foreground
-                  : scheme.onSurfaceVariant.withValues(alpha: 0.6),
-            ),
+            // 窄化已读订阅：markRead 只 bump readReceiptTick（不再整表
+            // refresh），重绘范围收窄到这个小图标。
+            Obx(() {
+              controller.readReceiptTick.value;
+              return Icon(
+                m.read ? Icons.done_all : Icons.done,
+                size: 13,
+                color: m.read
+                    ? context.statusStyleOf(AppStatus.success).foreground
+                    : scheme.onSurfaceVariant.withValues(alpha: 0.6),
+              );
+            }),
           ],
         ],
       ),
@@ -424,13 +436,18 @@ class _ChatDetailPageState extends State<ChatDetailPage> {
           ),
           if (isMe) ...[
             const SizedBox(width: AppDesign.spaceXXS),
-            Icon(
-              m.read ? Icons.done_all : Icons.done,
-              size: 13,
-              color: m.read
-                  ? context.statusStyleOf(AppStatus.success).foreground
-                  : scheme.onSurfaceVariant.withValues(alpha: 0.6),
-            ),
+            // 窄化已读订阅：markRead 只 bump readReceiptTick（不再整表
+            // refresh），重绘范围收窄到这个小图标。
+            Obx(() {
+              controller.readReceiptTick.value;
+              return Icon(
+                m.read ? Icons.done_all : Icons.done,
+                size: 13,
+                color: m.read
+                    ? context.statusStyleOf(AppStatus.success).foreground
+                    : scheme.onSurfaceVariant.withValues(alpha: 0.6),
+              );
+            }),
           ],
         ],
       ),

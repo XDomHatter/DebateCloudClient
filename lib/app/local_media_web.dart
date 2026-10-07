@@ -12,9 +12,28 @@ import 'package:http_parser/http_parser.dart';
 import 'package:video_player/video_player.dart';
 import 'package:web/web.dart' as web;
 
-/// 会话级内存缓存：缓存名 -> 字节。容量管理（LRU 上限 / IndexedDB 持久化）
-/// 留作后续迭代。
+/// 会话级内存缓存：缓存名 -> 字节（Map 为插入序，访问即挪队尾）。
+///
+/// 移动浏览器内存有限，视频与原图整段驻留很快吃光预算，因此用简单
+/// LRU 封顶（条数与总字节任一超限即从最旧端淘汰）。已解码位图在
+/// Flutter 自身图片缓存中，不受此处淘汰影响；仍被持有的 [CachedMedia]
+/// 实例带着自己的字节引用，淘汰后也能继续用。IndexedDB 持久化留作
+/// 后续迭代。
 final Map<String, Uint8List> _cacheStore = <String, Uint8List>{};
+
+/// LRU 上限：单条长视频可能远超字节预算，淘汰时始终保留最新一条。
+const int _cacheMaxEntries = 64;
+const int _cacheMaxBytes = 192 << 20;
+
+int _cacheBytes = 0;
+
+void _evictCacheOverflow() {
+  while (_cacheStore.length > _cacheMaxEntries ||
+      (_cacheStore.length > 1 && _cacheBytes > _cacheMaxBytes)) {
+    final oldest = _cacheStore.keys.first;
+    _cacheBytes -= _cacheStore.remove(oldest)!.lengthInBytes;
+  }
+}
 
 class CachedMedia {
   /// 缓存名（与原生端同名同值，方便排查）。
@@ -37,9 +56,11 @@ class CachedMedia {
   /// 视频播放入口。video_player 的 Web 后端是 <video> 元素，blob: URL
   /// 可以直接作为其 src，播放器逻辑仍按常规 API 编写。
   VideoPlayerController createVideoController() =>
-      VideoPlayerController.networkUrl(Uri.parse(_blobUrlFor()));
+      VideoPlayerController.networkUrl(Uri.parse(ensureBlobUrl()));
 
-  String _blobUrlFor() {
+  /// 取（或创建）这份字节对应的 blob: URL。播放器与视频首帧海报截帧
+  /// 共用同一份 URL，[release] 负责回收。
+  String ensureBlobUrl() {
     final existing = _blobUrl;
     if (existing != null) return existing;
     return _blobUrl = _createBlobUrl(bytes!);
@@ -66,18 +87,27 @@ String _createBlobUrl(Uint8List bytes) {
 }
 
 Future<CachedMedia?> loadCachedMedia(String name) async {
-  final bytes = _cacheStore[name];
+  // remove + 重插：命中挪到队尾，维持 LRU 访问序。
+  final bytes = _cacheStore.remove(name);
   if (bytes == null) return null;
+  _cacheStore[name] = bytes;
   return CachedMedia._(name, bytes);
 }
 
 Future<CachedMedia> writeCachedMedia(String name, Uint8List bytes) async {
+  final old = _cacheStore.remove(name);
+  _cacheBytes += bytes.lengthInBytes - (old?.lengthInBytes ?? 0);
   _cacheStore[name] = bytes;
+  _evictCacheOverflow();
   return CachedMedia._(name, bytes);
 }
 
 /// 组一个 multipart 上传分片。Web 端没有可读路径，直接把选择器给出的
 /// 字节交给 `fromBytes`（XFile.readAsBytes 在 Web 上从 blob 拉取）。
+///
+/// filename 必须传（取 XFile.name）：`fromBytes` 不传 filename 时分片头
+/// 没有 `filename=` 属性，服务端（Jetty/Javalin）会把整个分片当普通表单
+/// 字段而非文件，`uploadedFile(field)` 取不到值，报 "file is required"。
 Future<http.MultipartFile> buildMediaPart(
   String field,
   XFile file,
@@ -86,6 +116,7 @@ Future<http.MultipartFile> buildMediaPart(
   return http.MultipartFile.fromBytes(
     field,
     await file.readAsBytes(),
+    filename: file.name,
     contentType: contentType,
   );
 }

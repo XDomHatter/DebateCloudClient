@@ -65,37 +65,108 @@ class _ContactsPageState extends State<ContactsPage> {
         if (controller.isLoading.value && controller.friends.isEmpty) {
           return const AppLoading();
         }
+        // 项模型在这里同步算好（body Obx 借此订阅各数据源），卡片本身
+        // 延迟到 itemBuilder——好友多了以后整列表一帧内全量布局正是
+        // 移动端滚动卡顿的来源。
+        final hasError = controller.errorMessage.value.isNotEmpty;
+        final results = controller.searchResults;
+        final friends = _sortedFriends(controller.friends);
+        // 搜索段：段头 + 加载/空态/卡片；未搜索时整段为 0 项。
+        final searchCount =
+            searched ? 1 + (controller.isSearching.value || results.isEmpty ? 1 : results.length) : 0;
+        final friendsCount = 1 + (controller.friends.isEmpty ? 1 : friends.length);
+        // 索引布局：0 搜索框 | 错误横幅 | 搜索段 | 好友段。
+        final searchBase = 1 + (hasError ? 1 : 0);
+        final friendBase = searchBase + searchCount;
         return RefreshIndicator(
           onRefresh: controller.load,
-          child: ListView(
+          child: ListView.builder(
             // 内容不足一屏时也必须可拖动，否则下拉刷新失效。
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(AppDesign.spaceM),
-            children: [
-              Center(
+            itemCount: friendBase + friendsCount,
+            itemBuilder: (context, index) {
+              Widget content;
+              if (index == 0) {
+                content = _searchBar(context);
+              } else if (hasError && index == 1) {
+                content = Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: AppDesign.spaceS),
+                    _errorBanner(context),
+                  ],
+                );
+              } else if (index < friendBase) {
+                // 搜索段：0=段头（带前置间距），1=加载/空态，其余=结果卡。
+                final off = index - searchBase;
+                content = switch (off) {
+                  0 => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: AppDesign.spaceL),
+                        AppSectionHeader(
+                          title: '搜索结果',
+                          icon: Icons.search,
+                          trailing: Text(
+                            '${results.length} 人',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                        const SizedBox(height: AppDesign.spaceXS),
+                      ],
+                    ),
+                  1 when controller.isSearching.value => const Padding(
+                      padding: EdgeInsets.symmetric(vertical: AppDesign.spaceM),
+                      child: AppLoading(),
+                    ),
+                  1 when results.isEmpty => const AppEmptyState(
+                      icon: Icons.person_search_outlined,
+                      message: '没有找到匹配的用户，换个用户名或昵称试试',
+                      verticalPadding: AppDesign.spaceL,
+                    ),
+                  _ => _userCard(context, results[off - 1]),
+                };
+              } else {
+                // 好友段：0=段头（带前置间距），1=空态，其余=好友卡。
+                final off = index - friendBase;
+                final onlineCount =
+                    controller.friends.where((f) => f.online).length;
+                content = switch (off) {
+                  0 => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const SizedBox(height: AppDesign.spaceL),
+                        AppSectionHeader(
+                          title: '我的好友',
+                          icon: Icons.people_outline,
+                          trailing: Text(
+                            controller.friends.isEmpty
+                                ? ''
+                                : '$onlineCount 人在线 · 共 ${controller.friends.length} 人',
+                            style: Theme.of(context).textTheme.labelSmall,
+                          ),
+                        ),
+                        const SizedBox(height: AppDesign.spaceXS),
+                      ],
+                    ),
+                  1 => const AppEmptyState(
+                      icon: Icons.people_outline,
+                      message: '还没有好友，搜索用户名添加吧',
+                      verticalPadding: AppDesign.spaceL,
+                    ),
+                  _ => _friendCard(context, friends[off - 1]),
+                };
+              }
+              return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
                     maxWidth: AppDesign.maxContentWidth,
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _searchBar(context),
-                      if (controller.errorMessage.value.isNotEmpty) ...[
-                        const SizedBox(height: AppDesign.spaceS),
-                        _errorBanner(context),
-                      ],
-                      if (searched) ...[
-                        const SizedBox(height: AppDesign.spaceL),
-                        _searchSection(context),
-                      ],
-                      const SizedBox(height: AppDesign.spaceL),
-                      _friendsSection(context),
-                    ],
-                  ),
+                  child: content,
                 ),
-              ),
-            ],
+              );
+            },
           ),
         );
       }),
@@ -238,37 +309,6 @@ class _ContactsPageState extends State<ContactsPage> {
     );
   }
 
-  Widget _searchSection(BuildContext context) {
-    final results = controller.searchResults;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AppSectionHeader(
-          title: '搜索结果',
-          icon: Icons.search,
-          trailing: Text(
-            '${results.length} 人',
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
-        ),
-        const SizedBox(height: AppDesign.spaceXS),
-        if (controller.isSearching.value)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: AppDesign.spaceM),
-            child: AppLoading(),
-          )
-        else if (results.isEmpty)
-          const AppEmptyState(
-            icon: Icons.person_search_outlined,
-            message: '没有找到匹配的用户，换个用户名或昵称试试',
-            verticalPadding: AppDesign.spaceL,
-          )
-        else
-          for (final u in results) _userCard(context, u),
-      ],
-    );
-  }
-
   Widget _userCard(BuildContext context, ChatUserBrief u) {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
@@ -320,33 +360,6 @@ class _ContactsPageState extends State<ContactsPage> {
           ],
         ),
       ),
-    );
-  }
-
-  Widget _friendsSection(BuildContext context) {
-    final friends = controller.friends;
-    final onlineCount = friends.where((f) => f.online).length;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        AppSectionHeader(
-          title: '我的好友',
-          icon: Icons.people_outline,
-          trailing: Text(
-            friends.isEmpty ? '' : '$onlineCount 人在线 · 共 ${friends.length} 人',
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
-        ),
-        const SizedBox(height: AppDesign.spaceXS),
-        if (friends.isEmpty)
-          const AppEmptyState(
-            icon: Icons.people_outline,
-            message: '还没有好友，搜索用户名添加吧',
-            verticalPadding: AppDesign.spaceL,
-          )
-        else
-          for (final f in _sortedFriends(friends)) _friendCard(context, f),
-      ],
     );
   }
 

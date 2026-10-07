@@ -76,26 +76,25 @@ class _NotificationsPageState extends State<NotificationsPage> {
         }
         return RefreshIndicator(
           onRefresh: controller.load,
-          child: ListView(
+          child: ListView.builder(
             // 内容不足一屏时也必须可拖动，否则下拉刷新失效。
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.all(AppDesign.spaceM),
-            children: [
-              Center(
+            itemCount: controller.notifications.length,
+            itemBuilder: (context, index) {
+              return Center(
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(
                     maxWidth: AppDesign.maxContentWidth,
                   ),
-                  child: Column(
-                    children: [
-                      // 新通知实时到达时直接刷新列表。
-                      for (final n in controller.notifications)
-                        _notificationCard(context, n),
-                    ],
+                  // 新通知实时到达时直接刷新列表。
+                  child: _notificationCard(
+                    context,
+                    controller.notifications[index],
                   ),
                 ),
-              ),
-            ],
+              );
+            },
           ),
         );
       }),

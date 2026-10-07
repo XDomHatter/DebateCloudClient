@@ -284,7 +284,11 @@ class ProfileView extends StatelessWidget {
               child: CircleAvatar(
                 radius: 52,
                 backgroundColor: scheme.primaryContainer,
-                backgroundImage: profile.avatar?.imageProvider(),
+                // 头像圆直径 104 逻辑像素，按 2x 物理像素解码即可，
+                // 不必把原图整幅位图搬进显存。
+                backgroundImage: profile.avatar == null
+                    ? null
+                    : ResizeImage(profile.avatar!.imageProvider(), width: 256),
                 child: profile.avatar == null
                     ? Icon(Icons.person, size: 52, color: scheme.onPrimaryContainer)
                     : null,

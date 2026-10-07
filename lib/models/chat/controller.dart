@@ -31,6 +31,13 @@ class ChatHomeController extends GetxController {
   StreamSubscription? _sub;
   Worker? _authWorker;
 
+  /// socket 事件触发的刷新节流窗口：每条群消息都全量拉取会话既浪费
+  /// 带宽，也让常驻的消息 tab 反复重建；窗口内首次立即刷新，其余事件
+  /// 合并到窗口尾部一次性补发。下拉刷新、进入页面等主动调用不受限。
+  static const Duration _socketReloadInterval = Duration(seconds: 3);
+  DateTime _lastLoadAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _pendingReload;
+
   @override
   void onInit() {
     super.onInit();
@@ -40,7 +47,7 @@ class ChatHomeController extends GetxController {
       if (e.type == 'message.new' ||
           e.type == 'group.message.new' ||
           e.type == 'group.updated') {
-        load();
+        _throttledLoad();
       }
     });
     // 消息 tab 常驻 IndexedStack，控制器不会重建：
@@ -52,10 +59,26 @@ class ChatHomeController extends GetxController {
   void onClose() {
     _sub?.cancel();
     _authWorker?.dispose();
+    _pendingReload?.cancel();
     super.onClose();
   }
 
+  /// 距上次 load 不足一个窗口时挂一个尾部 Timer 合并后续事件；
+  /// 已有待发 Timer 时直接并入，不再顺延。
+  void _throttledLoad() {
+    final elapsed = DateTime.now().difference(_lastLoadAt);
+    if (elapsed >= _socketReloadInterval) {
+      load();
+      return;
+    }
+    _pendingReload ??= Timer(_socketReloadInterval - elapsed, () {
+      _pendingReload = null;
+      load();
+    });
+  }
+
   Future<void> load() async {
+    _lastLoadAt = DateTime.now();
     // 未登录不发需要鉴权的请求：本控制器随 IndexedStack 常驻，应用启动
     // （token 为空）和登出后都会被触发，此时请求只会得到 404。
     if (!auth.isLoggedIn) {
@@ -261,6 +284,10 @@ class ChatDetailController extends GetxController {
 
   /// 媒体上传中：期间禁用附件按钮，避免并发上传把带宽吃满。
   final isUploading = false.obs;
+
+  /// 已读回执版本号：markRead 就地改写消息对象的 read 字段（列表身份
+  /// 不变），以此 tick 通知已读对勾重绘——不再对整表 refresh。
+  final readReceiptTick = 0.obs;
 
   bool _hasMore = true;
   StreamSubscription? _sub;
@@ -470,11 +497,12 @@ class ChatDetailController extends GetxController {
       final cleared = friend.unreadCount;
       friend.unreadCount = 0;
       if (cleared > 0) socket.clearUnreadMessages(cleared);
-      // 本地标记已读。
+      // 本地标记已读：只改字段 + bump tick，让已读对勾自己重绘；
+      // 整表 refresh 会让所有可见气泡（含 markdown 重排版）白重建一遍。
       for (final m in messages) {
         if (m.senderId == friend.userId) m.read = true;
       }
-      messages.refresh();
+      readReceiptTick.value++;
     } catch (_) {}
   }
 }

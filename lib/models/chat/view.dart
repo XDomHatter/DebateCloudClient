@@ -179,56 +179,76 @@ class _ChatHomePageState extends State<ChatHomePage> {
         child: AppSkeletonList(itemCount: 6),
       );
     }
+    final entries = ChatHomeController.mergeEntries(
+      controller.conversations,
+      controller.groups,
+    );
+    final hasNotice = controller.errorMessage.value.isNotEmpty ||
+        (controller.conversations.isEmpty && controller.groups.isEmpty);
     return RefreshIndicator(
       onRefresh: controller.load,
-      child: ListView(
+      child: ListView.builder(
         // 内容不足一屏时也必须可拖动，否则下拉刷新失效。
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(AppDesign.spaceM),
-        children: [
-          Center(
+        // builder 才能虚拟化：会话一多，整列表一帧内全量布局正是移动
+        // 端滚动卡顿的来源。第 0 项是入口行（含错误/空态），其余是 tile。
+        itemCount: hasNotice ? 1 : entries.length + 1,
+        itemBuilder: (context, index) {
+          Widget content;
+          if (index == 0) {
+            content = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _topSection(_entryRow(context)),
+                const SizedBox(height: AppDesign.spaceL),
+                if (hasNotice)
+                  controller.errorMessage.value.isNotEmpty
+                      ? _topSection(
+                          AppEmptyState(
+                            icon: Icons.wifi_off_outlined,
+                            title: '加载失败',
+                            message: controller.errorMessage.value,
+                            hint: '会话列表需要服务器连接',
+                            actionLabel: '重试',
+                            onAction: controller.load,
+                          ),
+                        )
+                      : _topSection(
+                          const AppEmptyState(
+                            icon: Icons.forum_outlined,
+                            title: '暂无会话',
+                            message: '去添加好友或发起群聊，聊起来后这里会按时间排列',
+                            verticalPadding: AppDesign.spaceM,
+                          ),
+                        ),
+              ],
+            );
+          } else {
+            final e = entries[index - 1];
+            content = switch (e) {
+              Friend f => _conversationTile(context, f),
+              ChatGroup g => _groupTile(context, g),
+              _ => const SizedBox.shrink(),
+            };
+          }
+          // 原整列限宽容器逐项等价拆分；key 让元素随数据移动复用，
+          // 重排时不再全量重拉头像。
+          return Center(
+            key: index == 0
+                ? null
+                : ValueKey(switch (entries[index - 1]) {
+                    Friend f => 'conv-u-${f.userId}',
+                    ChatGroup g => 'conv-g-${g.groupId}',
+                    _ => 'conv-?$index',
+                  }),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: AppDesign.maxContentWidth),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _topSection(_entryRow(context)),
-                  const SizedBox(height: AppDesign.spaceL),
-                  if (controller.errorMessage.value.isNotEmpty)
-                    _topSection(
-                      AppEmptyState(
-                        icon: Icons.wifi_off_outlined,
-                        title: '加载失败',
-                        message: controller.errorMessage.value,
-                        hint: '会话列表需要服务器连接',
-                        actionLabel: '重试',
-                        onAction: controller.load,
-                      ),
-                    )
-                  else if (controller.conversations.isEmpty && controller.groups.isEmpty)
-                    _topSection(
-                      const AppEmptyState(
-                        icon: Icons.forum_outlined,
-                        title: '暂无会话',
-                        message: '去添加好友或发起群聊，聊起来后这里会按时间排列',
-                        verticalPadding: AppDesign.spaceM,
-                      ),
-                    )
-                  else
-                    for (final e in ChatHomeController.mergeEntries(
-                      controller.conversations,
-                      controller.groups,
-                    ))
-                      switch (e) {
-                        Friend f => _conversationTile(context, f),
-                        ChatGroup g => _groupTile(context, g),
-                        _ => const SizedBox.shrink(),
-                      },
-                ],
-              ),
+              constraints:
+                  const BoxConstraints(maxWidth: AppDesign.maxContentWidth),
+              child: content,
             ),
-          ),
-        ],
+          );
+        },
       ),
     );
   }
